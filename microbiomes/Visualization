@@ -1,0 +1,276 @@
+library(microbiome)
+library(ggplot2)
+library(ggpubr)
+library(phyloseq)
+library(knitr)
+install.packages("tidyverse")
+library(tidyverse)
+
+infile_asv_counts <- "C:/Users/Santiago/Desktop/USF/PhD/Genes/Visualization Observations. Edited/santiago_asv_counts.tsv"
+infile_asv_tax <- "C:/Users/Santiago/Desktop/USF/PhD/Genes/Visualization Observations. Edited/santiago_asvs_taxonomy.tsv"
+infile_sample_data <- "C:/Users/Santiago/Desktop/USF/PhD/Genes/Observations/Sample_names.tsv"
+
+df_asv_counts <- read.delim(infile_asv_counts)
+df_asv_tax <- read.delim(infile_asv_tax)
+df_sample_data <- read.delim(infile_sample_data)
+
+#Convert the data to matrix format
+m_asv_counts<-as.matrix(df_asv_counts[2:length(df_asv_counts)])
+rownames(m_asv_counts)<-df_asv_counts[,1]
+
+m_asv_tax<-as.matrix(df_asv_tax[2:length(df_asv_tax)])
+rownames(m_asv_tax)<-df_asv_tax[,1]
+
+##There are 3 possible components to a phyloseq object: otu_table, sample_data, tax_table
+df_sample_data$location <- c("Proximal", "Proximal", "Rectal", "Rectal", "Proximal", "Proximal", "Rectal", "Rectal", "Proximal", "Proximal", "Rectal", "Rectal", "Proximal", "Proximal", "Rectal", "Rectal", "Proximal", "Proximal", "Rectal", "Rectal", "ctl2", "ctl3", "mock", "X.ctl")
+df_sample_data$timepoint <- c("1", "2", "1", "2", "1", "2", "1", "2", "1", "2", "1", "2", "1", "2", "1", "2", "1", "2", "1", "2", "ctl2", "ctl3", "mock", "X.ctl")
+
+pseq2<-phyloseq(otu_table(m_asv_counts,taxa_are_rows = T),tax_table(m_asv_tax), sample_data(df_sample_data))
+
+
+
+view((otu_table(pseq2))) 
+view(microbiome::meta(pseq2))
+view(tax_table(pseq2))
+
+install.packages("biomformat")
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install("biomformat")
+library(biomformat)
+
+write_biom(otu_table(pseq2), "C:/Users/Santiago/Desktop/USF/PhD/Genes/Visualization Observations. Edited/otu_table.biom")
+write.csv(microbiome::meta(pseq2), file = "C:/Users/Santiago/Desktop/USF/PhD/Genes/Visualization Observations. Edited/meta_data.csv")
+
+##Compute the relative level for each taxa
+pseq.rel2 <- microbiome::transform(pseq2,"compositional")
+##Remove control samples
+pseq.rel2.nocont <- subset_samples(pseq.rel2, !SampleID %in% c('LP.ctl2','LP.ctl3','mock','X.ctl'))
+##aggregate taxa to the class level (so data will fit on graph)
+#pseq.rel2.nocont.agg<-aggregate_taxa(pseq.rel2.nocont,level="Family")
+##Remove rare OTUs
+#pseq.rel2.core <- subset_taxa(core(pseq.rel2.nocont.agg, detection = 0, prevalence = 0.6), Family!='Unknown')
+
+pseq.rel2.nocont.agg<-aggregate_taxa(pseq.rel2.nocont,level="Class")
+pseq.rel2.core <- subset_taxa(core(pseq.rel2.nocont.agg, detection = 0, prevalence = 0.01), Class!='Unknown')
+
+sample_data(pseq.rel2.core)$location <- rep(c('P','P','R','R'),5)
+sample_data(pseq.rel2.core)$timepoint <- rep(c(1,2),10)
+sample_data(pseq.rel2.core)$locationXtimepoint <- rep(c('P1','P2','R1','R2'),5)
+
+##Recommend to save as 10X10
+comp_plot<-plot_composition(pseq.rel2.core,group_by="locationXtimepoint")+
+  guides(fill=guide_legend(ncol=1))+
+  labs(x = "Samples", y = "Relative abundance",
+       title = "Relative abundance data")
+print(comp_plot)
+
+View(pseq.rel2)
+##Let's create a dataframe for plotting the results
+df_rectal_meta<-microbiome::meta(pseq.rel2)
+##Add Shannon diversity data to the dataframe
+tab<-read.csv("C:/Users/Santiago/Desktop/USF/PhD/Genes/Visualization Observations. Edited/tab.cvs")
+
+df_rectal_meta$Shannon<-tab$shannon
+
+df_rectal_meta$location <- c("Proximal", "Proximal", "Rectal", "Rectal", "Proximal", "Proximal", "Rectal", "Rectal", "Proximal", "Proximal", "Rectal", "Rectal", "Proximal", "Proximal", "Rectal", "Rectal", "Proximal", "Proximal", "Rectal", "Rectal", "ctl2", "ctl3", "mock", "X.ctl")
+df_rectal_meta$timepoint <- c("1", "2", "1", "2", "1", "2", "1", "2", "1", "2", "1", "2", "1", "2", "1", "2", "1", "2", "1", "2", "ctl2", "ctl3", "mock", "X.ctl")
+
+df_rectal_meta2 <- df_rectal_meta[-c(21,22,23,24),]
+
+##Let's create a plot comparing the diversity between
+plot_div<-ggviolin(df_rectal_meta2, x="location", y="Shannon", add="boxplot", fill = "location")
+plot_div2<-ggviolin(df_rectal_meta2, x="timepoint", y="Shannon", add="boxplot", fill = "timepoint")
+
+##Add stats (Wilcoxin test)
+plot_div<-plot_div+stat_compare_means(comparisons = list(c("Proximal", "Rectal")), method= "wilcox.test")
+plot_div2<-plot_div2+stat_compare_means(comparisons = list(c("1", "2")), method= "wilcox.test")
+
+print(plot_div)
+print(plot_div2)
+
+##Result is sensitive to sample size. Recommended to subsample or bootstrap to
+##avoid bias
+##Rarefying data is inappropriate for differential abundance testing,
+##but rarefying gives the best results when comparing sample similarity
+##Calculate the divergences within the diet groups
+pseq.rarefied<-rarefy_even_depth(pseq2,rngseed=8675309,replace=F)
+View(pseq.rarefied)
+##Calculate beta diversity with respect to the median taxa
+##profile for each group
+b.proximal<-as.numeric(divergence(x=subset_samples(pseq.rarefied,location=="Proximal"),y=apply(abundances(subset_samples(pseq.rarefied,location=="Proximal")),1,median),method="bray"))
+
+b.rectal<-as.numeric(divergence(x=subset_samples(pseq.rarefied,location=="Rectal"),y=apply(abundances(subset_samples(pseq.rarefied,location=="Rectal")),1,median),method="bray"))
+
+b.1<-as.numeric(divergence(x=subset_samples(pseq.rarefied,timepoint=="1"),y=apply(abundances(subset_samples(pseq.rarefied,timepoint=="1")),1,median),method="bray"))
+
+b.2<-as.numeric(divergence(x=subset_samples(pseq.rarefied,timepoint=="2"),y=apply(abundances(subset_samples(pseq.rarefied,timepoint=="2")),1,median),method="bray"))
+#b.formula<-divergence(subset_samples(pseq.rarefied,diet="Standard infant formula"))
+boxplot(list(Proximal=b.proximal,Rectal=b.rectal))
+boxplot(list(One=b.1,Two=b.2))
+
+wilcox.test(x=b.proximal,y=b.rectal,alternative = "less")
+wilcox.test(x=b.1,y=b.2,alternative = "less")
+
+library(vegan) #Perform statistics on ordination results
+##Rarefying data is inappropriate for differential abundance testing,
+##but rarefying gives the best results when comparing sample similarity
+##Calculate the divergences within the diet groups
+
+pseq.rarefied<-rarefy_even_depth(pseq2,rngseed=8675309,replace=F)
+pseq.rarefied.nocont <- subset_samples(pseq.rarefied, !SampleID %in% c('LP.ctl2','LP.ctl3','mock','X.ctl'))
+##First lets plot the sample ordination
+ord_plot<-plot_landscape(pseq.rarefied.nocont,method="PCoA",distance = "bray",col="location")+labs(title="PCoA/Bray-Curtis")
+print(ord_plot)
+
+ord_plot2<-plot_landscape(pseq.rarefied.nocont,method="PCoA",distance = "bray",col="timepoint")+labs(title="PCoA/Bray-Curtis")
+print(ord_plot2)
+
+##We will use a PERMONVA to see if there are statistically distinguishable communties 
+dist<-vegdist(t(otu_table(pseq.rarefied)),method="bray")
+
+##Check if the variances are equal between the groups. If not assumtion for PERMOVNA not met
+print(anova(betadisper(dist,microbiome::meta(pseq.rarefied)$location)))
+print(anova(betadisper(dist,microbiome::meta(pseq.rarefied)$timepoint)))
+
+
+View(pseq.rarefied)
+
+##For this data the assumtion is not met, but here's the code
+
+install.packages("dplyr", "readxl")
+library(dplyr) 
+library(readxl)
+
+m_for_adonis<-otu_table(pseq.rarefied)
+m_taxa_table<-tax_table(pseq.rarefied)
+rownames(m_for_adonis) <- m_taxa_table[,"Phylum"]
+m_for_adonis<-t(m_for_adonis)
+
+pseq.rarefied_genera <- tax_glom(pseq.rarefied, 'Genus')
+
+taxa_names(pseq.rarefied_genera) <- tax_table(pseq.rarefied_genera)[taxa_names(pseq.rarefied_genera),'Genus']
+
+
+
+permonva_results<-adonis(t(otu_table(pseq.rarefied_genera))~location, 
+                         data=microbiome::meta(pseq.rarefied),
+                         permutations = 100,
+                         method="bray")
+
+print(permonva_results)
+
+
+permonva_results2<-adonis(t(otu_table(pseq.rarefied_genera))~timepoint, 
+                          data=microbiome::meta(pseq.rarefied),
+                         permutations = 100,
+                         method="bray")
+print(permonva_results2)
+##Show coefficients for the top taxa separating the groups
+permonva_result_coefs<-coefficients(permonva_results)
+permonva_result_location<-permonva_result_coefs["location1",]
+
+permonva_result_coefs2<-coefficients(permonva_results2)
+permonva_result_timepoint<-permonva_result_coefs2["timepoint1",]
+
+top.location.coef<-permonva_result_location[rev(order(abs(permonva_result_location)))[1:5]]
+par(mar=c(3,9,2,1)) #Setting margin sizes requires trial and error
+barplot(sort(top.location.coef),horiz=T,las=1,main="Top taxa location")
+
+top.timepoint.coef<-permonva_result_timepoint[rev(order(abs(permonva_result_timepoint)))[1:5]]
+par(mar=c(3,9,2,1)) #Setting margin sizes requires trial and error
+barplot(sort(top.timepoint.coef),horiz=T,las=1,main="Top taxa timepoint")
+
+################################################################################
+
+library(metagenomeSeq)
+pseq_mrexp<-phyloseq_to_metagenomeSeq(pseq2)
+
+
+###Keep samples with at least 1 count. Keep features with at least 30 count###
+pseq_mrexp<-filterData(pseq_mrexp,present=30,depth=1)
+
+###Normalization###
+p<-cumNormStat(pseq_mrexp)
+pseq_mrexp<-cumNorm(pseq_mrexp,p=p) #Calculate the scaling factors
+
+###Create a design matrix and run statistical model###
+phenotype_data<-pData(pseq_mrexp) #Get the metadata associated with this experiment
+
+###Make breast milk the reference group (Reference is the denominator in logFC)###
+phenotype_data$diet<-relevel(factor(phenotype_data$diet),"Breast milk")
+##A design matrix specicies what comparisons we want to make
+##For more on design matrices check this youtube video: https://www.youtube.com/watch?v=CqLGvwi-5Pc
+design_matrix<-model.matrix(~1+diet,data=phenotype_data) #Can drop 1, we're just explicitly showing an intercept
+
+feature_fit_model<-fitFeatureModel(obj=pseq_mrexp,mod=design_matrix)
+
+###Identify the differentially abundant microbes###
+taxas<-fData(pseq_mrexp)$unique
+sig_taxa<-MRcoefs(feature_fit_model,adjustMethod = "fdr",alpha = 0.1,taxa=taxas)
+write.csv(sig_taxa,"Routput/sig_taxa_table_metagenomeSeq.csv")
+####Graph the results###
+
+##Identify the rows containing the abundance info for the significant taxa
+sig_taxa_index<-which(rownames(MRcounts(pseq_mrexp)) %in% rownames(sig_taxa))
+##Get the descriptions of the significant taxa
+sig_taxa_desc<-rownames(MRcounts(pseq_mrexp))[sig_taxa_index]
+##Find data locations for the 2 groups
+classIndex<-list(Breast_milk=which(pData(pseq_mrexp)$diet=="Breast milk",arr.ind = T))
+classIndex$Infant_formula<-which(pData(pseq_mrexp)=="Standard infant formula",arr.ind = T)
+
+
+pdf("Rfigs/sig_taxa_metagenomeSeq.pdf")
+for(i in seq(1,length(sig_taxa_index))){
+  taxa_index<-sig_taxa_index[[i]]
+  taxa_desc<-sig_taxa_desc[[i]]
+  plotOTU(pseq_mrexp,otu=taxa_index,classIndex = classIndex,main=taxa_desc)
+}
+
+dev.off()
+
+### SUSAN HOLMES PIPELINE ###
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+library(BiocManager)
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install("biomaRt")
+
+BiocManager::install("DECIPHER")
+library(DECIPHER)
+install.packages("phangorn")
+library(phangorn)
+
+seqs <- getSequences(santiago_nochim)
+names(seqs) <- seqs # This propagates to the tip labels of the tree
+alignment <- AlignSeqs(DNAStringSet(seqs), anchor=NA)
+
+phang.align <- phyDat(as(alignment, "matrix"), type="DNA")
+dm <- dist.ml(phang.align)
+treeNJ <- NJ(dm) # Note, tip order != sequence order
+fit = pml(treeNJ, data=phang.align)
+## negative edges length changed to 0!
+fitGTR <- update(fit, k=4, inv=0.2)
+fitGTR <- optim.pml(fitGTR, model="GTR", optInv=TRUE, optGamma=TRUE,
+                    rearrangement = "stochastic", control = pml.control(trace = 0))
+                    
+detach("package:phangorn", unload=TRUE)
+
+library("ape")
+random_tree = rtree(ntaxa(pseq2), rooted=TRUE, tip.label=taxa_names(pseq2))
+plot(random_tree)
+plot(ladderize(random_tree), cex=0.1)
+physeq1 <- merge_phyloseq(pseq2, random_tree, fitGTR)
+psyseq1
+
+plot_tree(physeq1, label.tips = "taxa_names", ladderize = "left", plot.margin = 0.3)
+
+
+tree <- write.tree(random_tree, file = "C:/Users/Santiago/Desktop/USF/PhD/Genes/Observations/tree.newick", append = FALSE,
+           digits = 10, tree.names = FALSE)
