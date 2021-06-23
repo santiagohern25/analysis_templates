@@ -38,6 +38,7 @@ parameters {
     matrix[NB_s,NN] delta_prevalence;
     matrix[NB_s,NN] delta_abundance;
     matrix[NS,NT] abundance_observed;
+    vector[NS] multinomial_nuisance;
     real<upper=0> inv_log_less_contamination; // smaller = less average contamination
     real<lower=0> contaminant_overdisp;            // dispersion parameter for amount of contamination in true negative count observations
 }
