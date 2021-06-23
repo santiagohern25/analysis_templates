@@ -1,0 +1,154 @@
+# The purpose is to obtain Amplicon Sequence variant table for all the samples with microbiome data.
+# We will start with demultiplexed fastq files for all samples and this analysis is for paired-end data
+# Thus, for each sample, there will be two files (_R1_001.fastq which is the forward and _R2_001.fastq which is the reverse on Illumina platform
+
+# Let's make a directory to save the results. Let be it "/Users/anujitsarkar/Documents/microbiome_workshp/santiago_results"
+setwd("C:/Users/Santiago/Desktop/USF/PhD/Genes/Observations")
+
+# Let's locate a directory where all the fastq files are stored and give it a name.
+# If the fastq files are in zipped format, they should be unzipped first
+santiago_microbiome_fasqfiles <- "C:/Users/Santiago/Desktop/USF/PhD/Genes/Observations/fastq"
+
+# Let's load the appropriate R package (dada2) for the analysis. It should be installed in advance
+library(dada2)
+library(GUniFrac)
+
+# It is important to note down the package version of dada2
+packageVersion("dada2")
+
+# We should check if the fastq source directory contains all our fastq files
+list.files(santiago_microbiome_fasqfiles)
+
+# Now we are going to make two sub-directories to separate the forward and the reverse reads
+santiago_F <- sort(list.files(santiago_microbiome_fasqfiles, pattern="_R1_001.fastq", full.names = TRUE))
+santiago_R <- sort(list.files(santiago_microbiome_fasqfiles, pattern="_R2_001.fastq", full.names = TRUE))
+
+# Extract filenames of all samples for future
+santiago_samplenames <- sapply(strsplit(basename(santiago_F), "_"), '[', 1)
+
+# Let's check how is our data with quality plots (first let's check the forward)
+pdf('santiago_F_quality.pdf', width = 12, height = 8, pointsize = 8)
+plotQualityProfile(santiago_F[1:24], n=1e+06)
+dev.off()
+
+# Now let's check how is our data for reverse reads
+pdf('santiago_R_quality.pdf', width = 12, height = 8, pointsize = 8)
+plotQualityProfile(santiago_R[1:24], n=1e+06)
+dev.off()
+
+
+# The next step is to filter the sequences appropriately depending on the data. 
+# Our target is to discard the bad sequences, trim the ends and save the good reads to a new directory
+
+# The first step here is to make a directory to which the good sequences will be stored
+santiago_goodF <- file.path("C:/Users/Santiago/Desktop/USF/PhD/Genes/Observations/santiago_good_filtered", paste0(santiago_samplenames, "F_good.fastq.gz"))
+santiago_goodR <- file.path("C:/Users/Santiago/Desktop/USF/PhD/Genes/Observations/santiago_good_filtered", paste0(santiago_samplenames, "R_good.fastq.gz"))
+names(santiago_goodF) <- santiago_samplenames
+names(santiago_goodR) <- santiago_samplenames
+
+# This is the very important step of filter and trimming each fastq. These parameters are flexible and should depend on your data
+# santiago_good_proper <- filterAndTrim(santiago_F, santiago_goodF, santiago_R, santiago_goodR, trimLeft = c(17, 21), truncLen = c(150, 145), maxN = 0, truncQ = 2, minQ=1, maxEE = c(2, 4), rm.phix = TRUE, n = 1e+5, compress = TRUE, verbose = TRUE)
+
+santiago_good_proper <- filterAndTrim(santiago_F, santiago_goodF, santiago_R, santiago_goodR, trimLeft = c(17, 21), truncLen = c(249, 248), maxN = 0, truncQ = 2, minQ=1, maxEE = c(2, 4), rm.phix = TRUE, n = 1e+6, compress = TRUE, verbose = TRUE)
+
+# save the output of previous step
+write.table(santiago_good_proper, "santiago_filteredout.txt", sep = "\t")
+
+# Now let us calculate the error rates for the forward and reverse sequences.
+santiago_error_F <- learnErrors(santiago_goodF, nbases = 1e+07, randomize = TRUE, MAX_CONSIST = 12, multithread = TRUE, verbose = TRUE)
+
+# Let us plot the forward error rate
+pdf('santiago_error_F_plot.pdf', width = 10, height = 10, pointsize = 8)
+plotErrors(santiago_error_F, obs = TRUE, nominalQ = TRUE)
+dev.off()
+
+# Let us calculate the reverse error rate and plot the error graph
+santiago_error_R <- learnErrors(santiago_goodR, nbases = 1e+07, randomize = TRUE, MAX_CONSIST = 12, multithread = TRUE, verbose = TRUE)
+pdf('santiago_error_R_plot.pdf', width = 10, height = 10, pointsize = 8)
+plotErrors(santiago_error_R, obs = TRUE, nominalQ = TRUE)
+dev.off()
+
+# The next step is to dereplicate the sequences in each sample
+derep_santiago_F <- derepFastq(santiago_goodF, n = 1e+06, verbose = TRUE)
+derep_santiago_R <- derepFastq(santiago_goodR, n = 1e+06, verbose = TRUE)
+
+names(derep_santiago_F) <- santiago_samplenames
+names(derep_santiago_R) <- santiago_samplenames
+
+# Now it is time to run the actual algorithm of dada2 to determine the ASVs in the dataset
+# This step is run separately for forward and reverse sets
+santiago_dada_F <- dada(derep_santiago_F, err=santiago_error_F, pool = TRUE, multithread = TRUE)
+santiago_dada_R <- dada(derep_santiago_R, err=santiago_error_R, pool = TRUE, multithread = TRUE)
+
+# Let's see how many sequence variants we have got in the forward set
+santiago_dada_F[[1]]
+
+santiago_dada_R[[1]]
+
+# Now we are going to merge the forward and the reverse sets (the paired-end reads)
+santiago_merged <- mergePairs(santiago_dada_F, derep_santiago_F, santiago_dada_R, derep_santiago_R, minOverlap = 20, maxMismatch = 0, verbose = TRUE)
+
+# Let's make a sequence table of all the ASVs
+santiago_sequence_table <- makeSequenceTable(santiago_merged, orderBy = "abundance")
+
+# We can check the distribution of the ASVs by length
+table(nchar(getSequences(santiago_sequence_table)))
+
+# Another important step: Remove the chimeric sequences
+santiago_nochim <- removeBimeraDenovo(santiago_sequence_table, method = "consensus", minFoldParentOverAbundance = 3, verbose = TRUE, multithread = TRUE)
+seqtab <- removeBimeraDenovo(santiago_sequence_table, method = "consensus", minFoldParentOverAbundance = 3, verbose = TRUE, multithread = TRUE)
+# Let's see how many ASVs remains
+dim(santiago_nochim)
+
+# Let's see whta proportion of sequences we retained after filtering for chimera
+sum(santiago_nochim)/sum(santiago_sequence_table)
+
+# Now we have gone through all the filtering, trimming, cleanup etc. Here we can check how many sequences we were able to retain after each step.
+# This test is important for trouble-shooting purposes. Let's work this out with a function
+fetch_numbers <- function(a) sum(getUniques(a))
+santiago_track_steps <- cbind(santiago_good_proper, sapply(santiago_dada_F, fetch_numbers), sapply(santiago_dada_R, fetch_numbers), sapply(santiago_merged, fetch_numbers), rowSums(santiago_nochim))
+colnames(santiago_track_steps) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nochim")
+rownames(santiago_track_steps) <- santiago_samplenames
+
+# Let's save the output to a new file
+write.table(santiago_track_steps, "C:/Users/Santiago/Desktop/USF/PhD/Genes/Observations/santiago_filtering_steps_track.txt", sep = "\t")
+
+# The next step is to assign taxonomy to all the ASVs
+# We will use the Silva database v.132 for this purpose
+# santiago_taxonomy <- assignTaxonomy(santiago_nochim, "C:/Users/anuji/OneDrive/Documents/microbiome_workshop/Dec2020workshop/Day2/Day2/Rdata/Silva_db/silva_nr_v132_train_set.fa", minBoot = 80, tryRC = TRUE, verbose = TRUE, multithread = TRUE)
+
+# santiago_taxonomy <- assignTaxonomy(santiago_nochim, "C:/Users/anuji/OneDrive/Documents/santiago/results_san/rdp_train_set_18.fa.gz", minBoot = 50, tryRC = FALSE, verbose = TRUE, multithread = TRUE)
+
+santiago_taxonomy <- assignTaxonomy(santiago_nochim, "C:/Users/Santiago/Desktop/USF/PhD/Genes/Observations/Silva_db/silva_nr_v132_train_set.fa", minBoot = 50, tryRC = TRUE, verbose = TRUE, multithread = TRUE)
+
+
+
+write.table(santiago_taxonomy, "santiago_taxaout.txt", sep = "\t")
+
+# Let's create a table by replacing the ASV sequences with ids (ASV_1, ASV_2 etc.) and their corressponding classifications
+santiago_taxa_summary <- santiago_taxonomy
+row.names(santiago_taxa_summary) <- NULL
+head(santiago_taxa_summary)
+
+# Let's make a file listing all the ASVs and their sequences in fasta format
+santiago_asv_seqs <- colnames(santiago_nochim)
+santiago_asv_headers <- vector(dim(santiago_nochim)[2], mode = "character")
+for (i in 1:dim(santiago_nochim)[2]) {santiago_asv_headers[i] <- paste(">ASV", i, sep = "_")}
+santiago_asv.fasta <- c(rbind(santiago_asv_headers, santiago_asv_seqs))
+write(santiago_asv.fasta, "santiago_out_asv.fasta")
+
+# At this step, we need to make a table of ASV counts for each sample (which is going to be most important for all statistical analyses)
+santiago_asv_tab <- t(santiago_nochim)
+row.names(santiago_asv_tab) <- sub(">", "", santiago_asv_headers)
+write.table(santiago_asv_tab, "santiago_asv_counts.tsv", sep = "\t", quote=F, col.names = NA)
+
+# Finally, let's make a table with the taxonomy of all the ASVs
+santiago_asv_taxa <- santiago_taxonomy
+row.names(santiago_asv_taxa) <- sub(">", "", santiago_asv_headers)
+write.table(santiago_asv_taxa, "santiago_asvs_taxonomy.tsv", sep = "\t", quote=F, col.names = NA)
+dim(santiago_asv_taxa)
+
+
+
+
+
